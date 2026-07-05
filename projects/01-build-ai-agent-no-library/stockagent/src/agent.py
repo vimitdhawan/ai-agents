@@ -7,11 +7,13 @@ from stockagent.src.tools import get_stock_price
 
 
 def extract_json(text: str):
+    # Handle double braces by replacing them with single braces for json.loads
+    text = text.replace("{{", "{").replace("}}", "}")
     match = re.search(r"\{.*\}", text, re.DOTALL)
-
+    
     if not match:
         return None
-
+    
     try:
         return json.loads(match.group())
     except Exception:

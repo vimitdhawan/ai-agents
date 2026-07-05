@@ -111,7 +111,7 @@ We'll use an instruct model. They understand tasks better and follow instruction
 
 Here's where we start writing code. The brain of our agent is an LLM accessed via the HuggingFace Inference API.
 
-Create a file called `src/llm.py`:
+Create a file called `stockagent/src/llm.py`:
 
 ```python
 import os
@@ -121,16 +121,18 @@ from huggingface_hub import InferenceClient
 load_dotenv()
 
 client = InferenceClient(
-    model="moonshotai/Kimi-K2.5",
+    model="meta-llama/Llama-3.1-8B-Instruct",
     token=os.getenv("HF_TOKEN"),
 )
 ```
 
-This sets up a client that connects to the Kimi-K2.5 model on HuggingFace. You'll need a `HF_TOKEN` environment variable — get one from huggingface.co and add it to a `.env` file:
+This sets up a client that connects to the Llama 3.1 model on HuggingFace. You'll need a `HF_TOKEN` environment variable — get one from huggingface.co and add it to a `.env` file:
 
-```
+```bash
 HF_TOKEN=your_token_here
 ```
+
+> **Note on Models:** We use `meta-llama/Llama-3.1-8B-Instruct` for its reliability in following the ReAct prompt format. Other models like `Qwen/Qwen2.5-7B-Instruct` also work well. The `stop` mechanism (explained below) is crucial for the loop to work correctly.
 
 Now let's add two functions. This is where it gets interesting.
 
@@ -161,7 +163,7 @@ def chat(messages):
 
 `chat()` is called after the agent has observed the tool result. It takes the full conversation (including what the tool returned) and asks the LLM to generate a natural-language response for the user.
 
-You can swap `Kimi-K2.5` for any instruct model on HuggingFace — `meta-llama/Llama-3.1-8B-Instruct`, `Qwen/Qwen2.5-7B-Instruct`, whatever you prefer. The agent logic stays the same.
+You can swap `Llama-3.1-8B-Instruct` for any instruct model on HuggingFace. The agent logic stays the same.
 
 ---
 
@@ -202,14 +204,14 @@ This is critical: the LLM doesn't see your code. It only sees the text descripti
 
 ### Writing the System Prompt
 
-The system prompt is the instruction manual for your agent. It tells the LLM what tools are available and how to use them. Create `src/prompts.py`:
+The system prompt is the instruction manual for your agent. It tells the LLM what tools are available and how to use them. Create `stockagent/src/prompts.py`:
 
 ```python
 SYSTEM_PROMPT = """Answer the following questions as best you can. You have access to the following tools:
 
 get_stock_price: Get the current stock price for a given ticker symbol
 
-The way you use the tools is by specifying a json blob.
+The way you use the ConcreteJSON synapse JSON blobs is by specifying a json blob.
 Specifically, this json should have an `action` key (with the name of the tool to use) and an `action_input` key (with the input to the tool going here).
 
 The only values that should be in the "action" field are:
@@ -227,9 +229,8 @@ Question: the input question you must answer
 Thought: you should always think about one action to take. Only one action at a time in this format:
 Action:
 
-$JSON_BLOB (inside markdown cell)
-
-Observation: the result of the action. This Observation is unique, complete, and the source of truth.
+$JSON_BLOB
+This Observation is unique, complete, and the source of truth.
 ... (this Thought/Action/Observation can repeat N times, you should take several steps when needed. The $JSON_BLOB must be formatted as markdown and only use a SINGLE action at a time.)
 
 You must always end your output with the following format:
@@ -246,7 +247,7 @@ The JSON blob is how the LLM tells the agent what to do. It says `{"action": "ge
 
 ### Writing the Tool
 
-Now let's write the actual tool. Create `src/tools.py`:
+Now let's write the actual tool. Create `stockagent/src/tools.py`:
 
 ```python
 def get_stock_price(ticker: str) -> str:
@@ -346,7 +347,7 @@ This approach lets agents solve complex, multi-step problems while using externa
 
 ### Building the Agent Class
 
-Now let's write the agent itself. Create `agent.py` in the project root:
+Now let's write the agent itself. Create `stockagent/src/agent.py`:
 
 ```python
 import json
@@ -359,11 +360,15 @@ from stockagent.src.tools import get_stock_price
 
 def extract_json(text: str):
     """Extract a JSON object from LLM response text."""
+    # Pro Tip: LLMs sometimes return double braces ({{ }}) when mimicking 
+    # the prompt format. We normalize them before parsing.
+    text = text.replace("{{", "{").replace("}}", "}")
+    
     match = re.search(r"\{.*\}", text, re.DOTALL)
-
+    
     if not match:
         return None
-
+    
     try:
         return json.loads(match.group())
     except Exception:
@@ -415,24 +420,24 @@ Let's trace through what happens when someone asks "What's the stock price of AA
 2. A messages list is built with the system prompt and the user's question
 3. `observation(messages)` sends this to the LLM
 4. The LLM thinks: "The user wants a stock price. I should use the get_stock_price tool."
-5. The LLM returns something like `{"action": "get_stock_price", "action_input": {"ticker": "AAPL"}}` in its response
-6. `extract_json()` pulls that JSON out of the text
+5. The LLM returns the Action JSON in its response
+6. `extract_json()` pulls that JSON out of the text (handling the `{{ }}` edge case)
 7. The agent sees `action == "get_stock_price"`, calls `get_stock_price("AAPL")`, gets `"187.32 USD"`
 8. It builds a new messages list including the tool result and calls `chat()` to get the LLM's final response
 9. Returns the result to the user
 
 That's it. That's the whole agent.
 
-The `extract_json()` function uses a regex to find JSON in the LLM's response. This is a bit fragile — in production you'd use something more robust — but it works for a demo. The LLM generates the JSON blob and the regex finds it.
-
 ---
 
 ## Putting It All Together: Running Your Agent
 
-Create a `run.py` file to use your agent:
+The `extract_json()` function uses a regex to find JSON in the LLM's response. This is a bit fragile — in production you'd use something more robust — but it works for a demo. The LLM generates the JSON blob and the regex finds it.
+
+Create a `main.py` file in the project root to use your agent:
 
 ```python
-from stockagent.agent import StockMarketAgent
+from stockagent.src.agent import StockMarketAgent
 
 agent = StockMarketAgent()
 result = agent.run("What is the stock price of AAPL?")
@@ -442,8 +447,10 @@ print(result)
 Run it:
 
 ```bash
-python run.py
+PYTHONPATH=. python3 main.py
 ```
+
+> **Why `PYTHONPATH=.`?** This tells Python to look for modules in the current directory. Without it, you might get a `ModuleNotFoundError: No module named 'stockagent'`. It's the safest way to run local packages.
 
 Here's what the flow looks like step by step:
 
@@ -480,10 +487,10 @@ Three steps. That's an AI agent.
 
 Let's look at what we built:
 
-- **An LLM client** (`src/llm.py`) that connects to HuggingFace and provides two modes: one that stops before tool execution, one that generates a final response
-- **A system prompt** (`src/prompts.py`) that teaches the LLM to use tools in a structured ReAct format
-- **A tool** (`src/tools.py`) that looks up stock prices — with a note about how to swap in a real API
-- **An agent** (`agent.py`) that orchestrates the loop: send to LLM → extract tool call → execute tool → send result back to LLM → return answer
+- **An LLM client** (`stockagent/src/llm.py`) that connects to HuggingFace and provides two modes: one that stops before tool execution, one that generates a final response
+- **A system prompt** (`stockagent/src/prompts.py`) that teaches the LLM to use tools in a structured ReAct format
+- **A tool** (`stockagent/src/tools.py`) that looks up stock prices — with a note about how to swap in a real API
+- **An agent** (`stockagent/src/agent.py`) that orchestrates the loop: send to LLM → extract tool call → execute tool → send result back to LLM → return answer
 
 The entire project is about 80 lines of Python. No frameworks. No dependencies beyond `huggingface_hub` and `python-dotenv`.
 
@@ -574,9 +581,9 @@ python-dotenv
 **Setup:**
 ```bash
 cd projects/01-build-ai-agent-no-library
-pip install huggingface-hub python-dotenv
+pip install -r requirements.txt
 echo "HF_TOKEN=your_token_here" > .env
-python main.py
+PYTHONPATH=. python3 main.py
 ```
 
 ---

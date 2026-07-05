@@ -1,8 +1,0 @@
-huggingface_hub
-python-dotenv
-smolagents
-litellm
-ddgs
-langchain_community
-langchain_text_splitters
-rank_bm25

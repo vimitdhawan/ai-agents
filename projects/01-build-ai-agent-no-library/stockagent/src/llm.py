@@ -5,7 +5,7 @@ from huggingface_hub import InferenceClient
 load_dotenv()
 
 client = InferenceClient(
-    model="moonshotai/Kimi-K2.5",
+    model="meta-llama/Llama-3.1-8B-Instruct",
     token=os.getenv("HF_TOKEN"),
 )
 
